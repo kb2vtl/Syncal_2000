@@ -3,22 +3,23 @@
   Syncal 2000 display program
 
   Emulates original and now unobtainable Syncal 2000 LCD display allowing replacement 
-  with new OLED display module which is available off the shelf.  
+  with new 122x32 graphics LCD display module which is available off the shelf.  
 
-  This code uses liquidcrystal.h to communicate to the display and wire.h to emulate the 
-  factory LCD driver chips in the radio.
+  This code uses wire.h to emulate the factory LCD driver chips in the radio.
 
-  This code is in the public domain.
+  This code is in the public domain and may be freely used in the hope that it is 
+  useful to someone either as-is or as part of another project.
 
-  Created 27 November 2016
-  Graphic display work started December 17 2016
-  Basic graphics display up December 24, 2016 with main freq and status line
-  All functionality ok except main display text messages 12/26/16
+  For application background and construction notes please see:
+  http://petergottlieb.com/wordpress/?p=24
+
+  Started 27 November 2016
+  First full functionality 29 December 2016
   by Peter Gottlieb
 */
 
 /**************************************************
- * Arduino Syncal 2000 display v0.1 - 2016/11/21
+ * Arduino Syncal 2000 display v1.0 - 2016/12/29
  * By Peter Gottlieb
  * This work is distributed under the GNU General 
  * Public License version 3 or later (GPL3+)
@@ -29,13 +30,7 @@
  * ************************************************/
 #include <Wire.h>
 
-
-bool LED = false;
-byte c;
-int x;
 byte segment;
-int count;
-
 bool cmdbyte = false;                       // is the incoming byte a command?
 int DataPointer = 0;                        // PCF8576 data pointer
 bool LCDbias;                               // LCD bias level, no purpose here
@@ -43,8 +38,8 @@ bool LCDpowerMode;                          // LCD normal or power saving mode, 
 bool LCDenable;                             // LCD display enable
 byte LCDmode;                               // LCD drive mode, mode 01 (single backplane) wired in radio
 byte LCDdevice;                             // LCD device select
-//bool LCDinBank;                             // PCF8576 RAM load bank select
-//bool LCDoutBank;                            // PCF8576 RAM display bank select
+//bool LCDinBank;                             // PCF8576 RAM load bank select (now declared in receiveEvent)
+//bool LCDoutBank;                            // PCF8576 RAM display bank select (now declared in receiveEvent)
 bool LCDblinkMode;                          // LCD blink, normal or alternation
 byte LCDblinkFreq;                          // LCD blink frequency, off and 3 choices
 byte LCDdata[20];                           // LCD display data storage array
@@ -81,14 +76,14 @@ bool LCDf;                                  // F
 bool LCDk;                                  // K
 uint8_t LCDbar;                             // 3 level bar chart for battery or transmit power
 uint8_t LCDbarW;                            // 3 level bar written to display
-int db0pin = 0;                             // Digital IO bus pins to display
-int db1pin = 1;                             //
-int db2pin = 2;                             //
-int db3pin = 3;                             //
-int db4pin = 4;                             //
-int db5pin = 5;                             //
-int db6pin = 6;                             //
-int db7pin = 7;                             //
+//int db0pin = 0;                             // Digital IO bus pins to display
+//int db1pin = 1;                             //
+//int db2pin = 2;                             //
+//int db3pin = 3;                             //
+//int db4pin = 4;                             //
+//int db5pin = 5;                             //
+//int db6pin = 6;                             //
+//int db7pin = 7;                             //
 int a0pin = 13;                             // Data/Command pin to LCD, 0=command
 int rwPin = 8;                              // R/W pin to LCD, 0=write
 int ePin = 9;                               // E pin to LCD, see command routine
@@ -96,19 +91,20 @@ int clPin = 11;                             // Must be one of 3, 5, 6, 9, 10, or
 int cs1pin = 12;                            // LCD CS1 pin
 int cs2pin = 10;                            // LCD CS2 pin
 int m_sdl;
-//uint8_t buffer0;                            // display write buffers
-//uint8_t buffer1;
-//uint8_t buffer2;
-//uint8_t buffer3;
 char hamBand = ' ';                         // ham band to display, space or G or X
 char hamBandW;                              // ham band already written to display
 bool clean = 0;                             // if true, BITE message so keep display clean
 bool invMHz10 = 0;
 bool invMHz1 = 0;
-bool invKHz100 = 0;
-bool invKHz10 = 0;
+bool invKHz100 = 0;                         // these flags are used in programming mode where a digit is highlighted
+bool invKHz10 = 0;                          // to indicate it is selected for change
 bool invKHz1 = 0;
 bool invHz100 = 0;
+bool LCDmsgPass = 0;
+bool LCDmsgTune = 0;
+bool LCDmsgGood = 0;
+bool LCDmsgPoor = 0;
+bool LCDmsgFail = 0;
 
 // bitmasks for commands, see PCF8576 data sheet
 const byte maskC = B10000000;                // command continuation, means next byte is also a command byte
@@ -130,9 +126,9 @@ const byte bit3 = B00001000;
 const byte bit2 = B00000100;
 const byte bit1 = B00000010;
 const byte bit0 = B00000001;
-String disp = "0123456789PAFL GdnErotu?";     // characters for sending to Arduino LCD for test purposes
+String disp = "01";                                            // no longer used but if removed get linker fault so leaving it in
 
-const int ADDRESS = 57;                      //I2C address of Syncal 2000 LCD driver
+const int ADDRESS = 57;                                        //I2C address of Syncal 2000 LCD driver
 
 /// Chip selection
 const uint8_t WGLCD_NOCHIP = 0;
@@ -219,7 +215,7 @@ uint8_t smallText [] =                                                          
     0x00,0x33,0x00,0x39,0x00,0x29,0x00,0x25,0x00,0x27,0x00,0x33,0x00,0x00,0x00,0x00,  // z  8x12   z
   };    
 
-/*                                                                                                            // all small characters
+/*                                                                                                            // all small characters, in case we need them later
     0xC0,0x1F,0xE0,0x3F,0x20,0x2C,0x20,0x27,0xA0,0x21,0xE0,0x3F,0xC0,0x1F,0x00,0x00,  // 0  8x12
     0x80,0x20,0x80,0x20,0xC0,0x3F,0xE0,0x3F,0x00,0x20,0x00,0x20,0x00,0x00,0x00,0x00,  // 1  8x12
     0xC0,0x30,0xE0,0x38,0x20,0x2C,0x20,0x26,0xE0,0x33,0xC0,0x31,0x00,0x00,0x00,0x00,  // 2  8x12
@@ -305,7 +301,7 @@ uint8_t smallText [] =                                                          
     0x00,0x00,0x03,0xF0,0x0F,0xFC,0x1C,0x0E,0x38,0x07,0x30,0x03,0x30,0xC3,0x30,0xC3,0x30,0xC3,0x3F,0xC7,0x3F,0xC6,0x00,0x00       // G  12x16
     
   };
-/*       Full alpha table
+/*       Full alpha table for future use
 0x00,0x00,0x38,0x00,0x3F,0x00,0x07,0xE0,0x06,0xFC,0x06,0x1F,0x06,0x1F,0x06,0xFC,0x07,0xE0,0x3F,0x00,0x38,0x00,0x00,0x00,      // A  12x16
 0x00,0x00,0x3F,0xFF,0x3F,0xFF,0x30,0xC3,0x30,0xC3,0x30,0xC3,0x30,0xC3,0x30,0xE7,0x39,0xFE,0x1F,0xBC,0x0F,0x00,0x00,0x00,      // B  12x16
 0x00,0x00,0x03,0xF0,0x0F,0xFC,0x1C,0x0E,0x38,0x07,0x30,0x03,0x30,0x03,0x30,0x03,0x38,0x07,0x1C,0x0E,0x0C,0x0C,0x00,0x00,      // C  12x16
@@ -363,6 +359,8 @@ uint8_t smallText [] =                                                          
 //****************************************************************************************************
 // Initialization code
 void setup() {
+
+  // Set up pins for interface to LCD display
   DDRD  = 0x00;                                     // Set 8 bit bus as inputs for now
   pinMode(a0pin, OUTPUT);                           // a0pin    A0 to LCD
   pinMode(rwPin, OUTPUT);                           // rwPin    R/W control to LCD
@@ -371,21 +369,19 @@ void setup() {
   pinMode(cs1pin, OUTPUT);                          // cs1pin   Chip select 1 to LCD
   pinMode(cs2pin, OUTPUT);                          // cs2pin   Chip select 2 to LCD
 
-  pinMode(A0, OUTPUT);
-  pinMode(A1, OUTPUT);                              // debug outputs for scope
-
+  // Set up timer to create clock for LCD display
   TCCR2B = TCCR2B & 0b11111000 | 0x02;              // set timer 2 for divide ratio of 16.  This gives 3.9 kHz instead of 2, but the LCD seems fine.
   analogWrite( clPin, 127);                         // set to 50% duty cycle
  
-  //Set up wire.h as I2C slave receiver
+  // Set up wire.h as I2C slave receiver
   Wire.begin(ADDRESS);                              // Set up I2C as slave at ADDRESS
   Wire.onReceive(receiveEvent);                     // register I2C receive event
 
-  //Initialize LCD on and clear
-  selectChip(WGLCD_CHIPBOTH);                       // select both LCD chips on (ok)
-  displayOn();                                      // Switch LCD displays on (ok)
-  setSDL(0);                                        // Set start display line (ok)
-  setMapping(WGLCD_SEGMAP_NORMAL);                  // select normal segment mapping (ok)
+  // Initialize LCD, enable and clear
+  selectChip(WGLCD_CHIPBOTH);                       // select both LCD chips on
+  displayOn();                                      // Switch LCD displays on
+  setSDL(0);                                        // Set start display line
+  setMapping(WGLCD_SEGMAP_NORMAL);                  // select normal segment mapping
   fillScreen(0x00);                                 // Clear screen
 }
 //**************************************************************************************
@@ -461,27 +457,27 @@ void loop() {
     kHz10 = segment2number(LCDdata[3]);
     kHz1 = segment2number(LCDdata[4]);
     Hz100 = segment2number(LCDdata[5]);
-    channel10 = segment2number(LCDdata[6]);                 // Channel data; channels over 9 not used..
+    channel10 = segment2number(LCDdata[6]);                 // Channel data (channels over 9 not used)
     channel1 = segment2number(LCDdata[7]);
                                 
-    LCDdecimalpoint = LCDdata[0] & bit0;                    // other LCD symbols
-    LCDprog = LCDdata[1] & bit0;                                                                                            // still need to deal with this
-    LCDRX = LCDdata[2] & bit0;
-    LCDexternal = LCDdata[3] & bit0;
-    LCDch = LCDdata[4] & bit0;
+    LCDdecimalpoint = LCDdata[0] & bit0;                    // decimal point
+    LCDprog = LCDdata[1] & bit0;                            // PROG, program mode
+    LCDRX = LCDdata[2] & bit0;                              // RX, receive indication
+    LCDexternal = LCDdata[3] & bit0;                        // External, not sure what this is for
+    LCDch = LCDdata[4] & bit0;                              // CH, channel symbol
     LCDmhz = LCDdata[5] & bit0;                             // MHz symbol
-    LCDleftarrow = LCDdata[6] & bit0;
-    LCDrightarrow = LCDdata[7] & bit0;
-    LCDhi = LCDdata[8] & bit7;
-    LCDm = LCDdata[8] & bit6;
-    LCDlo = LCDdata[8] & bit5;
+    LCDleftarrow = LCDdata[6] & bit0;                       // Left tuning arrow
+    LCDrightarrow = LCDdata[7] & bit0;                      // Right tuning arrow
+    LCDhi = LCDdata[8] & bit7;                              // HI, high power indication
+    LCDm = LCDdata[8] & bit6;                               // M, medium power indication
+    LCDlo = LCDdata[8] & bit5;                              // LO, low power indication
     LCDf = LCDdata[8] & bit4;                               // what is this used for?
     LCDk = LCDdata[8] & bit3;                               // what is this used for?
 
-    invMHz10 = 0;
-    invMHz1 = 0;
-    invKHz100 = 0;
-    invKHz10 = 0;
+    invMHz10 = 0;                                           // When in frequency programming mode the digit being changed blinks.
+    invMHz1 = 0;                                            // This is done by setting the LCD chips to alternate between two segment bitmaps.
+    invKHz100 = 0;                                          // This code finds the differences between these two maps and sets flag(s)
+    invKHz10 = 0;                                           // to be used later on to invert (black/white) the digit being programmed.
     invKHz1 = 0;
     invHz100 = 0;
     if (LCDprog){
@@ -494,12 +490,11 @@ void loop() {
     }
     clean = 0;
 //******************************************************************************************
-/* Write frequency data to display (works ok)
+/* Write frequency data to display
  *  
  *  First, is frequency being displayed?  The MHz indicator is off when presenting text such as "PASS" 
  *  The 4 letter messages are in the places after the decimal point
  *  
- *  need to use LCDprog for blinking or inverted?  Perhaps overwrite power, Rx and hamband with "Prog" as well?
 */ 
   if (LCDmhz){                                                          // display frequrncy if MHz symbol on
     if (LCDmhz != LCDmhzW){                                             // display MHz letters
@@ -507,130 +502,140 @@ void loop() {
       writeFdecimal(1);
       LCDmhzW = 1;
       }
-    if (invMHz10){
-      writeFrequency(0, segment2number(LCDdata[10]));
-    }
+    if (invMHz10){                                                      // When in blink mode the normal segment map is empty
+      writeFrequency(0, segment2number(LCDdata[10]));                   // for the blinking digit so the actual number has
+    }                                                                   // to be found in the alternate segment map
     else{
       writeFrequency(0, MHz10);      
     }
-
     if (invMHz1){
       writeFrequency(1, segment2number(LCDdata[11]));
     }
     else{
       writeFrequency(1, MHz1);      
     }
-
     if (invKHz100){
       writeFrequency(2, segment2number(LCDdata[12]));
     }
     else{
       writeFrequency(2, kHz100);      
     }
-
     if (invKHz10){
       writeFrequency(3, segment2number(LCDdata[13]));
     }
     else{
       writeFrequency(3, kHz10);      
     }
-
     if (invKHz1){
       writeFrequency(4, segment2number(LCDdata[14]));
     }
     else{
       writeFrequency(4, kHz1);      
     }
-
         if (invHz100){
       writeFrequency(5, segment2number(LCDdata[15]));
     }
     else{
       writeFrequency(5, Hz100);      
     }
-
-//    writeFrequency(0, MHz10);     
-//    writeFrequency(1, MHz1);
-//    writeFrequency(2, kHz100);
-//    writeFrequency(3, kHz10);
-//    writeFrequency(4, kHz1);
-//    writeFrequency(5, Hz100);
-    writeClean();
+    writeClean();                                                       // this clears display space which was between the last freq digit and the 'MHz'
     clean = 0;
+    LCDmsgPass = 0;
+    LCDmsgTune = 0;
+    LCDmsgGood = 0;
+    LCDmsgPoor = 0;
+    LCDmsgFail = 0;
   }
   else {                                                                // display text message
-    LCDmhzW=0;
-    writeFrequency(0, 0x0E);                                            // clear frequency display
-    writeFrequency(1, 0x0E);
-    writeFdecimal(0);
-    writeFrequency(2, 0x0E);
-    writeFrequency(3, 0x0E);
-    writeFrequency(4, 0x0E);
-    writeFrequency(5, 0x0E);
-    writeClean();
-    writeMHz(0);
+    if (!(LCDmsgPass || LCDmsgTune || LCDmsgGood || LCDmsgPoor || LCDmsgFail)){
+      LCDmhzW=0;
+      writeFrequency(0, 0x0E);                                            // clear frequency display
+      writeFrequency(1, 0x0E);
+      writeFdecimal(0);
+      writeFrequency(2, 0x0E);
+      writeFrequency(3, 0x0E);
+      writeFrequency(4, 0x0E);
+      writeFrequency(5, 0x0E);
+      writeClean();
+      writeMHz(0);
+    }
                                                                         // decode alpha displays PASS FAIL Error Tune; 4 letter start at 100 kHz digit
-    if ((kHz100 == 10) & (kHz10 == 11))                                 // PASS
+    if ((kHz100 == 10) & (kHz10 == 11))                 // PASS detected?
     {
-      writeMain(0,0);
-      writeMain(12,0);
-      writeMain(24,'P');
-      writeMain(36,'a');
-      writeMain(48,'s');
-      writeMain(60,'s');
-      writeMain(84,0);
-      writeMain(96,0);
-      clean = 1;                                                        // inhibit other display info
+      if (!LCDmsgPass){
+        writeMain(0,0);                                                   // This is BITE Pass, only thing on display
+        writeMain(12,0);
+        writeMain(24,'P');
+        writeMain(36,'a');
+        writeMain(48,'s');
+        writeMain(60,'s');
+        writeMain(84,0);
+        writeMain(96,0);
+        clean = 1;                                                        // inhibit other display info
+        LCDmsgPass = 1;
+      }
     }
-    else if ((kHz100 == 21) & (kHz10 == 22))                            // tune
+    else if ((kHz100 == 21) & (kHz10 == 22))            // tune detected?
     {
-      writeMain(24,'T');
-      writeMain(36,'u');
-      writeMain(48,'n');
-      writeMain(60,'e');
-      writeClean();
-      clean = 0;                                                        // allow other display info
+      if (!LCDmsgTune){
+        writeMain(24,'T');
+        writeMain(36,'u');
+        writeMain(48,'n');
+        writeMain(60,'e');
+        writeClean();
+        clean = 0;                                                        // allow other display info
+        LCDmsgTune = 1;
+      }
     }
-    else if ((kHz100 == 6) & (kHz10 == 20))                             // Good
+    else if ((kHz100 == 6) & (kHz10 == 20))             // Good detected?
     {
-      writeMain(24,'G');
-      writeMain(36,'o');
-      writeMain(48,'o');
-      writeMain(60,'d');
-      writeClean();
-      clean = 0;                                                        // allow other display info
+      if (!LCDmsgGood){
+        writeMain(24,'G');
+        writeMain(36,'o');
+        writeMain(48,'o');
+        writeMain(60,'d');
+        writeClean();
+        clean = 0;                                                        // allow other display info
+        LCDmsgGood = 1;
+      }
     }
-    else if ((kHz100 == 10) & (kHz10 == 11))                            // Pass
+//    else if ((kHz100 == 10) & (kHz10 == 11))                            // Pass
+//    {
+//      writeMain(24,'P');
+//      writeMain(36,'a');                            // this is tune pass, can't differentiate from BITE Pass, remove it?
+//      writeMain(48,'s');                            // 
+//      writeMain(60,'s');
+//      writeClean();
+//      clean = 0;                                                        // allow other display info
+//    }
+    else if ((kHz100 == 10) & (kHz10 == 20))              // Poor detected?
     {
-      writeMain(24,'P');
-      writeMain(36,'a');
-      writeMain(48,'s');
-      writeMain(60,'s');
-      writeClean();
-      clean = 0;                                                        // allow other display info
+      if (!LCDmsgPoor){
+        writeMain(24,'P');
+        writeMain(36,'o');
+        writeMain(48,'o');
+        writeMain(60,'r');
+        writeClean();
+        clean = 0;                                                        // allow other display info
+        LCDmsgPoor = 1;
+      }
     }
-    else if ((kHz100 == 10) & (kHz10 == 20))                            // Poor
+    else if ((kHz100 == 12) & (kHz10 == 11))            // Fail detected?
     {
-      writeMain(24,'P');
-      writeMain(36,'o');
-      writeMain(48,'o');
-      writeMain(60,'r');
-      writeClean();
-      clean = 0;                                                        // allow other display info
-    }
-    else if ((kHz100 == 12) & (kHz10 == 11))                            // Fail
-    {
-      writeMain(24,'F');
-      writeMain(36,'a');
-      writeMain(48,'i');
-      writeMain(60,'l');
-      writeClean();
-      clean = 0;                                                        // allow other display info
+      if (!LCDmsgFail){
+        writeMain(24,'F');
+        writeMain(36,'a');
+        writeMain(48,'i');
+        writeMain(60,'l');
+        writeClean();
+        clean = 0;                                                        // allow other display info
+        LCDmsgFail = 1;
+      }
     }
                                                                         // Still need Error indications
   }
 //******************************************************************************************
-/* Write meter bar to display (works ok)
+/* Write meter bar to display
  *  
 */
     LCDbar = 0;
@@ -642,7 +647,7 @@ void loop() {
      LCDbarW = LCDbar;                                                            // store to see if we can skip write next time around
   }
 //******************************************************************************************
-/* Write ham band info to display (works ok)
+/* Write ham band info to display
  *  
 */
   char hamBand = 0;
@@ -712,21 +717,21 @@ void loop() {
      hamBandW = hamBand;                                                          // store to see if we can skip write next time around
      }
 //******************************************************************************************     
-// Program mode         
+// Program mode   (disabled, I don't like the look)      
 
   if (LCDprog){
-    writeStatusChar(105,'R');
+//    writeStatusChar(105,'R');
   }
   else{
     writeStatusChar(105,0);
   }
 
 //******************************************************************************************
-/* Write channel number to display (works ok)
+/* Write channel number to display
  *  
  *  If channel number is zero then display " VFO "
 */ 
-  if (clean == 0){
+  if (clean == 0 && LCDch){                                            // only display if the CH would normally be on, this keeps it clear initially
     if (channel1 != channel1W){                                        // only do the following if the channel number has changed
       if (channel1 == 0){                                              // display "VFO"
         writeStatusChar(0, 0);
@@ -755,7 +760,7 @@ void loop() {
   }
 
 //******************************************************************************************
-/* Write RX to display if squelch indicates open  (works ok)
+/* Write RX to display if squelch indicates open
  *  
 */
   if (LCDRX)
@@ -769,7 +774,7 @@ void loop() {
     writeStatusChar(81, 0);
   }
 //******************************************************************************************
-/* Write power level to display  (works ok)
+/* Write power level to display
  *  
 */
   if (LCDlo & (LCDpowerW != 1))                                      // if radio power is low and display isn't showing low, display "Lo"
@@ -778,7 +783,7 @@ void loop() {
     writeStatusChar(58, 'o');
     LCDpowerW = 1;
   }
-  else if (LCDm & (LCDpowerW != 2))                                  // if radio power is medium and display isn't showing medium, display "Md"
+  else if (LCDm & (LCDpowerW != 2))                                  // if radio power is medium and display isn't showing medium, display "M"
   {
     writeStatusChar(50, 'M');
     writeStatusChar(58, 0);
@@ -791,7 +796,7 @@ void loop() {
     LCDpowerW = 3;
   }
 //******************************************************************************************
-/* Write left or right arrow to display (works ok)
+/* Write left or right arrow to display
  *  
 */
   if (LCDleftarrow){
@@ -809,51 +814,51 @@ void loop() {
 //******************************************************************************************
 // Function that executes whenever data is received from I2C master addressed to us.
 // Time servicing this even is kept to a minimum to allow for quick recovery and processing of another
-// I2C receive such as when blink registers are loaded
+// I2C receive such as when blink registers are loaded immediately following regular registers
 //
 void receiveEvent(int howMany) {
-    cmdbyte = true;                                   // initial byte received is always a command byte
-    LCDpointer = 0;                                   // initialize local LCD data array pointer
-    bool LCDinBank = 0;                             // PCF8576 RAM load bank select
-    bool LCDoutBank = 0;                            // PCF8576 RAM display bank select
+    cmdbyte = true;                                                 // initial byte received is always a command byte
+    LCDpointer = 0;                                                 // initialize local LCD data array pointer
+    bool LCDinBank = 0;                                             // PCF8576 RAM load bank select
+    bool LCDoutBank = 0;                                            // PCF8576 RAM display bank select
 //*******************************************************************************************
 // PCF8576 command decoder and data collector
 // Receive bytes intended for PCF8576 chips and if commands, decode them to local variables and flags.  
 // This data is used by the main program loop to create the display
-// If data, loads to local array.
+// If data sent, store to local array.
 //
-    while (0 < Wire.available()){                       // loop through all 
-      byte indata = Wire.read();                        // get byte of data from receive buffer
-        if (cmdbyte){                                   // if command byte, decode command
-          if (indata & maskC){                          // if the C bit is set, the next byte received after this is also a command byte
+    while (0 < Wire.available()){                                   // loop through all received bytes
+      byte indata = Wire.read();                                    // get byte of data from receive buffer
+        if (cmdbyte){                                               // if command byte, decode command
+          if (indata & maskC){                                      // if the C bit is set, the next byte received after this is also a command byte
             cmdbyte = true;
           }
           else{
-            cmdbyte = false;                            // next and remaining bytes will be data
+            cmdbyte = false;                                        // next and remaining bytes will be data
           }
-                                                        // now we will decode the command byte
-          if (indata & bit6 == false){                  // if bit 6 is 0, this is a LOAD DATA POINTER COMMAND
+                                                                    // now we will decode the command byte
+          if (indata & bit6 == false){                              // if bit 6 is 0, this is a LOAD DATA POINTER COMMAND
             LCDpointer = indata & maskP; 
           }
           else{
-            if (indata & bit5 == false){                 // if bit 6 is 1 and bit 5 is 0, this is a MODE SET COMMAND
+            if (indata & bit5 == false){                            // if bit 6 is 1 and bit 5 is 0, this is a MODE SET COMMAND
               LCDpowerMode = indata & maskL;
               LCDenable = indata & maskE;
               LCDbias = indata & maskB;
               LCDmode = indata & maskM;
             }
-            else{                                          // bits 5 and 6 are 1
-              if (indata & bit4 == false){                    // bits 5 and 6 are 1, bit 4 is 0, this is a DEVICE SELECT COMMAND
+            else{                                                   // bits 5 and 6 are 1
+              if (indata & bit4 == false){                          // bits 5 and 6 are 1, bit 4 is 0, this is a DEVICE SELECT COMMAND
                 LCDdevice = indata & maskAd;
               }
               else{
-                if (indata & bit3 == false){                   // bits 6,5,4 are 1 and bit 3 is 0, this is a BLINK COMMAND
+                if (indata & bit3 == false){                        // bits 6,5,4 are 1 and bit 3 is 0, this is a BLINK COMMAND
                   LCDblinkMode = indata & maskA;
                   LCDblinkFreq = indata & maskF;
                 }
-                else{                                           // last remaining command is BANK SELECT COMMAND
+                else{                                               // last remaining command is BANK SELECT COMMAND
                   if (indata & B00000010){
-                    LCDinBank = 1;                                      // which bank is this data for?   maskI  (latch on until end of receive event)
+                    LCDinBank = 1;                                  // which bank is this data for?   maskI  (latch on until end of receive event)
                   }
                   LCDoutBank = indata & maskO;
                 }
@@ -861,7 +866,7 @@ void receiveEvent(int howMany) {
             }
           }
         }   
-        else{                                                  // data byte
+        else{                                                       // data byte
           // Pointer seems to always be zero in this app
           //
           // First let's just try to load second bank data (bank 1) to second half of our data buffer.  If this doesn't screw up the normal functionality
@@ -870,15 +875,15 @@ void receiveEvent(int howMany) {
           // Two bugs:  1) getting a 7 instead of 2 for 10's in MHz at times.  2) freq display blanks at times during programming, like alt digits?
           //
           if (LCDinBank){
-            LCDdata[0x0A + (LCDpointer++)] = indata;            // put incoming data byte into second bank area
+            LCDdata[0x0A + (LCDpointer++)] = indata;                // put incoming data byte into second bank area
           }
           else{
-            LCDdata[LCDpointer++] = indata;                     // get data byte, increment pointer for next data byte (20 bytes allocated, 2 pages)
+            LCDdata[LCDpointer++] = indata;                         // get data byte, increment pointer for next data byte (20 bytes allocated, 2 pages)
           }
         }
       } 
-      LCDinBank = 0;                                            // reset this after 2nd page data received
-  }                                                                     //end of receive event
+      LCDinBank = 0;                                                // reset this after 2nd page data received
+  }                                                                 //end of receive event
     
 //********************************************************************************************
 // Converts segment data to number or character by basic pattern match.
@@ -1218,7 +1223,7 @@ void setPixel(uint8_t x, uint8_t y, uint8_t val){
   endRMW();
 }
 //*****************************************************************************
-/*  Write frequency to display (works ok)
+/*  Write frequency to display
  * 
  * args:  digit, value
  * digit is 0 through 5 representing 10 MHz, 1 MHz, 100 kHz, 10 kHz, 1 kHz, 100 Hz
@@ -1299,7 +1304,7 @@ void writeFrequency(uint8_t digit, uint8_t val)  {
   }
 }
 //*****************************************************************************
-/*  Write frequency decimal point to display (works ok)
+/*  Write frequency decimal point to display
  * 
  * frequency decimal point is 6 pixels wide by 16 pixels high
  * 
@@ -1350,7 +1355,7 @@ void writeClean(){
     }
   }
 //*****************************************************************************
-/*  Write MHz to display (works ok)
+/*  Write MHz to display
  * 
  * MHz font is 8 pixels wide by 12 pixels high with 2 pixels on top and bottom as padding
  *
@@ -1383,7 +1388,7 @@ void writeMHz(bool state){
     }
   }
 //*****************************************************************************
-/* Write character to status line on display (works ok)
+/* Write character to status line on display
  * 
  * Uses smallText table
  * inputs are X pixel position to write character and the ASCII character to display
@@ -1480,7 +1485,7 @@ void writeStatusChar(uint8_t coordX, char ascii){
       }
   }
 //*****************************************************************************
-/* Write character to main line on display (works ok)
+/* Write character to main line on display
  * 
  * Uses largeText table, 12x16 font, for major status indications
  * inputs are X pixel position to write character and the ASCII character to display
@@ -1568,7 +1573,7 @@ void writeMain(uint8_t coordX, char ascii)
       }
   }
 //*****************************************************************************
-/*  Write meter bars to display (works ok)
+/*  Write meter bars to display
  * 
  * bars is input, 0,0,2 or 3
  */
