@@ -15,6 +15,7 @@
 
   Started 27 November 2016
   First full functionality 29 December 2016
+  Changed status line to include battery voltage 30 Dec 16
   by Peter Gottlieb
 */
 
@@ -105,6 +106,14 @@ bool LCDmsgTune = 0;
 bool LCDmsgGood = 0;
 bool LCDmsgPoor = 0;
 bool LCDmsgFail = 0;
+const int voltsFS = 15;                      // Full scale voltage for readout.  Corresponds to resistor divider to yield 5 volts FS to input
+float volts;                                 // for battery voltage measurement and display
+int volt10;
+int volt1;
+int voltV1;
+bool TXlow;                                  // keyline sense for TX indication
+bool invertV;                                // flag to invert voltage readout if out of limits
+
 
 // bitmasks for commands, see PCF8576 data sheet
 const byte maskC = B10000000;                // command continuation, means next byte is also a command byte
@@ -213,6 +222,10 @@ uint8_t smallText [] =                                                          
     0x00,0x1E,0x00,0x3F,0x00,0x21,0x00,0x21,0x00,0x3F,0x00,0x1E,0x00,0x00,0x00,0x00,  // o  8x12   o   
     0x00,0x21,0x00,0x33,0x00,0x1E,0x00,0x0C,0x00,0x1E,0x00,0x33,0x00,0x21,0x00,0x00,  // x  8x12   x
     0x00,0x33,0x00,0x39,0x00,0x29,0x00,0x25,0x00,0x27,0x00,0x33,0x00,0x00,0x00,0x00,  // z  8x12   z
+    0x00,0x1E,0x00,0x3F,0x00,0x21,0x20,0x21,0xE0,0x1F,0xE0,0x3F,0x00,0x20,0x00,0x00,  // d  8x12   d
+    0xC0,0x1F,0xE0,0x3F,0x20,0x2C,0x20,0x27,0xA0,0x21,0xE0,0x3F,0xC0,0x1F,0x00,0x00,  // 0  8x12   0
+    0x00,0x4E,0x00,0xDF,0x00,0x91,0x00,0x91,0x00,0xFE,0x00,0x7F,0x00,0x01,0x00,0x00,  // g  8x12   g
+    0x60,0x00,0x20,0x20,0xE0,0x3F,0xE0,0x3F,0x20,0x20,0x60,0x00,0x00,0x00,0x00,0x00   // T  8x12   T
   };    
 
 /*                                                                                                            // all small characters, in case we need them later
@@ -368,6 +381,8 @@ void setup() {
   pinMode(clPin, OUTPUT);                           // clPin    Clock output to LCD
   pinMode(cs1pin, OUTPUT);                          // cs1pin   Chip select 1 to LCD
   pinMode(cs2pin, OUTPUT);                          // cs2pin   Chip select 2 to LCD
+  pinMode(A2, INPUT);
+  digitalWrite(A2, HIGH);                           // Set analog pin 2 as input and enable internal pullup.  Will be used for keyline sensing.
 
   // Set up timer to create clock for LCD display
   TCCR2B = TCCR2B & 0b11111000 | 0x02;              // set timer 2 for divide ratio of 16.  This gives 3.9 kHz instead of 2, but the LCD seems fine.
@@ -635,7 +650,7 @@ void loop() {
                                                                         // Still need Error indications
   }
 //******************************************************************************************
-/* Write meter bar to display
+/* Write meter bar and voltage to display
  *  
 */
     LCDbar = 0;
@@ -646,6 +661,38 @@ void loop() {
      writeBars(LCDbar);                                                           // write bars to display
      LCDbarW = LCDbar;                                                            // store to see if we can skip write next time around
   }
+
+//  write voltage to display
+    volts = (analogRead(1) * (float) voltsFS / 1024);                  //  read and scale analog input A1
+
+    invertV = 0;
+    if (volts > 14.5 | volts < 10.5){
+      invertV = 1;
+    }
+    
+    volt10 = (int) (volts / 10);
+    volts = volts - (float)(10 * volt10);
+    volt1 = (int) volts;
+    volts = 10 * (volts - (float)volt1);
+    voltV1 = (int) volts;
+
+    writeStatusChar(97, 0x30 + voltV1, invertV);
+    writeStatusChar(85, 0x30 + volt1, invertV);    
+    writeStatusChar(77, 0x30 + volt10, invertV);
+
+    for(uint8_t index = 93; index < 95; index++){                         // place for decimal point
+      selectChip(chipFromX(index));
+      selectColumn(columnFromX(index));
+      selectPage(2);                                                      // page 2
+      dummyRead();
+      writeChar(0x00);
+      selectPage(3);                                                      // page 3
+      selectColumn(columnFromX(index));                                   // reset autoincremented column
+      dummyRead();
+      writeChar(0xC0);
+    }
+    writeStatusChar(107, 'V', 0);
+ 
 //******************************************************************************************
 /* Write ham band info to display
  *  
@@ -658,73 +705,69 @@ void loop() {
   long frequency = (10000000L * MHz10Z) + (1000000L * MHz1) + (100000L * kHz100) + (10000L * kHz10) + (1000L * kHz1) + (100L * Hz100);
 
   if ((frequency >= 1800000) && (frequency <= 2000000)) {                                                       // 160 meters
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if ((frequency >= 3600000) && (frequency <= 3800000)) {                                                  // 80 meters extra
-    hamBand = 'X';
+    hamBand = 'x';
     }
   else if ((frequency > 3800000) && (frequency <= 4000000)) {                                                   // 80 meters general
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if (frequency == 5330500) {                                                                              // 60 meters chan 1
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if (frequency == 5346500) {                                                                              // 60 meters chan 2
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if (frequency == 5357000) {                                                                              // 60 meters chan 3
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if (frequency == 5371500) {                                                                              // 60 meters chan 4
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if (frequency == 5403500) {                                                                              // 60 meters chan 5
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if ((frequency >= 7125000) && (frequency <= 7175000)) {                                                  // 40 meters extra
-    hamBand = 'X';
+    hamBand = 'x';
     }
   else if ((frequency > 7175000) && (frequency <= 7300000)) {                                                   // 40 meters general
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if ((frequency >= 14150000) && (frequency <= 14225000)) {                                                // 20 meters extra
-    hamBand = 'X';
+    hamBand = 'x';
     }
   else if ((frequency > 14225000) && (frequency <= 14350000)) {                                                 // 20 meters general
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if ((frequency >= 18110000) && (frequency <= 18168000)) {                                                // 17 meters
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if ((frequency >= 21200000) && (frequency <= 21275000)) {                                                // 15 meters extra
-    hamBand = 'X';
+    hamBand = 'x';
     }
   else if ((frequency > 21275000) && (frequency <= 21450000)) {                                                 // 15 meters general
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if ((frequency >= 24930000) && (frequency <= 24990000)) {                                                // 12 meters
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else if ((frequency >= 28330000) && (frequency <= 29700000)) {                                                // 10 meters
-    hamBand = 'G';
+    hamBand = 'g';
     }
   else {
     hamBand = 0;
   }
 
-  if (hamBand != hamBandW){
-     writeStatusChar(97, hamBand);                                                // write ham band to display
-     hamBandW = hamBand;                                                          // store to see if we can skip write next time around
-     }
 //******************************************************************************************     
 // Program mode   (disabled, I don't like the look)      
 
-  if (LCDprog){
-//    writeStatusChar(105,'R');
-  }
-  else{
-    writeStatusChar(105,0);
-  }
+//  if (LCDprog){
+//    writeStatusChar(??,'R', 0);
+//  }
+//  else{
+//    writeStatusChar(??,0, 0);
+//  }
 
 //******************************************************************************************
 /* Write channel number to display
@@ -734,65 +777,74 @@ void loop() {
   if (clean == 0 && LCDch){                                            // only display if the CH would normally be on, this keeps it clear initially
     if (channel1 != channel1W){                                        // only do the following if the channel number has changed
       if (channel1 == 0){                                              // display "VFO"
-        writeStatusChar(0, 0);
-        writeStatusChar(8, 'V');
-        writeStatusChar(16, 'F');
-        writeStatusChar(24, 'O');
-        writeStatusChar(35, 0);
+        writeStatusChar(0, 'V', 0);                                       // 
+        writeStatusChar(8, 'F', 0);                                       // 
+        writeStatusChar(16, 'O', 0);                                      // 
+    if (hamBand != hamBandW){
+     writeStatusChar(27, hamBand, 0);                                     // write ham band to display (was 97).  Do it here, only in VFO mode
+     hamBandW = hamBand;                                               // store to see if we can skip write next time around
+     }
+
         channel1W = channel1;
       }
       else {                                                            // display channel number
-        writeStatusChar(0, 'C');
-        writeStatusChar(8, 'h');
-        writeStatusChar(16, 'a');
-        writeStatusChar(24, 'n');
-        writeStatusChar(35, (0x30 + channel1));
+        writeStatusChar(0, 'C', 0);
+        writeStatusChar(8, 'h', 0);
+        writeStatusChar(16, 0, 0);                                         // clear out two cols between chars
+        writeStatusChar(18, (0x30 + channel1), 0);                         // 
         channel1W = channel1;    
       }
     }   
   }
   else {
-    writeStatusChar(0, 0);                                              // clear display
-    writeStatusChar(8, 0);
-    writeStatusChar(16, 0);
-    writeStatusChar(24, 0);
-    writeStatusChar(35, 0);
+    writeStatusChar(0, 0, 0);                                              // clear display
+    writeStatusChar(8, 0, 0);
+    writeStatusChar(16, 0, 0);
+    writeStatusChar(18, 0, 0);                                             // overlap to take care of space between Ch and number
   }
 
 //******************************************************************************************
 /* Write RX to display if squelch indicates open
  *  
 */
-  if (LCDRX)
-  {
-    writeStatusChar(73, 'R');                                        // display RX
-    writeStatusChar(81, 'x');
+  TXlow = digitalRead(A2);
+  if (!TXlow){
+    writeStatusChar(57, 'T', 1);                                        // display TX 
+    writeStatusChar(65, 'x', 1);                                        // 
   }
-  else
-  {
-    writeStatusChar(73, 0);                                          // clear RX from display
-    writeStatusChar(81, 0);
+  else{
+    if (LCDRX)
+    {
+      writeStatusChar(57, 'R', 0);                                        // display RX 
+      writeStatusChar(65, 'x', 0);                                        // 
+    }
+    else
+    {
+      writeStatusChar(57, 0, 0);                                          // clear display if neither Tx or Rx
+      writeStatusChar(65, 0, 0);
+    }
   }
+  
 //******************************************************************************************
 /* Write power level to display
  *  
 */
   if (LCDlo & (LCDpowerW != 1))                                      // if radio power is low and display isn't showing low, display "Lo"
   {
-    writeStatusChar(50, 'L');
-    writeStatusChar(58, 'o');
+    writeStatusChar(38, 'L', 0);                                        // was 50
+    writeStatusChar(46, 'o', 0);                                        // was 58
     LCDpowerW = 1;
   }
   else if (LCDm & (LCDpowerW != 2))                                  // if radio power is medium and display isn't showing medium, display "M"
   {
-    writeStatusChar(50, 'M');
-    writeStatusChar(58, 0);
+    writeStatusChar(38, 'M', 0);
+    writeStatusChar(46, 'd', 0);
     LCDpowerW = 2;
   }
   else if (LCDhi & (LCDpowerW != 3))                                 // if radio power is high and display isn't showing high, display "Hi"
   {
-    writeStatusChar(50, 'H');
-    writeStatusChar(58, 'i');
+    writeStatusChar(38, 'H', 0);
+    writeStatusChar(46, 'i', 0);
     LCDpowerW = 3;
   }
 //******************************************************************************************
@@ -1394,7 +1446,7 @@ void writeMHz(bool state){
  * inputs are X pixel position to write character and the ASCII character to display
  * If char=0 write zeroes
  */
-void writeStatusChar(uint8_t coordX, char ascii){
+void writeStatusChar(uint8_t coordX, char ascii, bool invert){
     int index = 0;                                                        // table index for font table
     uint8_t width = 8;                                                    // width of character to display (easy to make this an arg later to be more general)
     if ((ascii >= 0x31) & (ascii <= 0x39)){                               // test if character is number
@@ -1455,7 +1507,19 @@ void writeStatusChar(uint8_t coordX, char ascii){
           break;
         case 0x00:                                                          // blank
           index = 0x00 * 16;
-          break;         
+          break;
+        case 0x64:                                                          // d
+          index = 0x1A * 16;
+          break;
+        case 0x30:                                                          // 0
+          index = 0x1B * 16;
+          break;
+        case 0x67:                                                          // g
+          index = 0x1C * 16;
+          break;
+        case 0x54:                                                          // T
+          index = 0x1D * 16;
+          break;
         default:   
           return;                                                           // do nothing if ASCII code not something we have
         }
@@ -1473,16 +1537,26 @@ void writeStatusChar(uint8_t coordX, char ascii){
         if (ascii == 0x00){
           charA = 0;
           charB = 0;                                                      // if ascii character is 0x00 then write blank character
-        }
+          }
                    
         selectPage(2);                                                    // page 2, third page from top
         dummyRead();
-        writeChar(charA);
+        if (invert){
+          writeChar(~charA & B00000001);                                  // when inverting, linit to height of characters used in small font
+          }
+        else{
+          writeChar(charA);   
+          }
         selectPage(3);                                                    // page 3, bottom page of display
         selectColumn(columnFromX(coordX + colm));                         // reset autoincremented column
         dummyRead();
-        writeChar(charB);
-      }
+        if (invert){
+         writeChar(~charB);
+         }
+       else{
+         writeChar(charB);   
+         }
+       }
   }
 //*****************************************************************************
 /* Write character to main line on display
@@ -1575,10 +1649,11 @@ void writeMain(uint8_t coordX, char ascii)
 //*****************************************************************************
 /*  Write meter bars to display
  * 
- * bars is input, 0,0,2 or 3
+ * bars is input, 0,1,2 or 3
+ * Changed 12/30/16 to 4 wide instead of 8 wide
  */
 void writeBars(uint8_t bars){
-    uint8_t coordX = 114;                                                // start at position 114 (last char position on status row)
+    uint8_t coordX = 118;                                                // start at position 114 (last char position on status row)(now 118)
     uint8_t byte1 = 0;
     uint8_t byte2 = 0;
     if (bars == 1){
@@ -1594,7 +1669,7 @@ void writeBars(uint8_t bars){
         byte2 = 0xC6;          
       }
     // write pixel data to display
-    for(uint8_t index = 0; index < 8; index++){
+    for(uint8_t index = 0; index < 4; index++){                           // was 8
       selectChip(chipFromX(coordX + index));
       selectColumn(columnFromX(coordX + index));
       selectPage(2);                                                      // page 2
