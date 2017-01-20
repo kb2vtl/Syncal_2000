@@ -16,6 +16,10 @@
   Started 27 November 2016
   First full functionality 29 December 2016
   Changed status line to include battery voltage 30 Dec 16
+  Last three three things after testing:
+     1) Change ham band indication to - for general and + for extra
+     2) Fix bug where ham band doesn't erase, and doesn't work right (seems like display code issue as detection ok)
+     3) Add error indication handling (Er X)
   by Peter Gottlieb
 */
 
@@ -77,14 +81,6 @@ bool LCDf;                                  // F
 bool LCDk;                                  // K
 uint8_t LCDbar;                             // 3 level bar chart for battery or transmit power
 uint8_t LCDbarW;                            // 3 level bar written to display
-//int db0pin = 0;                             // Digital IO bus pins to display
-//int db1pin = 1;                             //
-//int db2pin = 2;                             //
-//int db3pin = 3;                             //
-//int db4pin = 4;                             //
-//int db5pin = 5;                             //
-//int db6pin = 6;                             //
-//int db7pin = 7;                             //
 int a0pin = 13;                             // Data/Command pin to LCD, 0=command
 int rwPin = 8;                              // R/W pin to LCD, 0=write
 int ePin = 9;                               // E pin to LCD, see command routine
@@ -106,6 +102,7 @@ bool LCDmsgTune = 0;
 bool LCDmsgGood = 0;
 bool LCDmsgPoor = 0;
 bool LCDmsgFail = 0;
+bool LCDmsgError = 0;
 const int voltsFS = 15;                      // Full scale voltage for readout.  Corresponds to resistor divider to yield 5 volts FS to input
 float volts;                                 // for battery voltage measurement and display
 int volt10;
@@ -225,7 +222,9 @@ uint8_t smallText [] =                                                          
     0x00,0x1E,0x00,0x3F,0x00,0x21,0x20,0x21,0xE0,0x1F,0xE0,0x3F,0x00,0x20,0x00,0x00,  // d  8x12   d
     0xC0,0x1F,0xE0,0x3F,0x20,0x2C,0x20,0x27,0xA0,0x21,0xE0,0x3F,0xC0,0x1F,0x00,0x00,  // 0  8x12   0
     0x00,0x4E,0x00,0xDF,0x00,0x91,0x00,0x91,0x00,0xFE,0x00,0x7F,0x00,0x01,0x00,0x00,  // g  8x12   g
-    0x60,0x00,0x20,0x20,0xE0,0x3F,0xE0,0x3F,0x20,0x20,0x60,0x00,0x00,0x00,0x00,0x00   // T  8x12   T
+    0x60,0x00,0x20,0x20,0xE0,0x3F,0xE0,0x3F,0x20,0x20,0x60,0x00,0x00,0x00,0x00,0x00,  // T  8x12   T
+    0x00,0x00,0x00,0x02,0x00,0x02,0x80,0x0F,0x80,0x0F,0x00,0x02,0x00,0x02,0x00,0x00,  // +
+    0x00,0x02,0x00,0x02,0x00,0x02,0x00,0x02,0x00,0x02,0x00,0x02,0x00,0x02,0x00,0x00   // -
   };    
 
 /*                                                                                                            // all small characters, in case we need them later
@@ -560,9 +559,10 @@ void loop() {
     LCDmsgGood = 0;
     LCDmsgPoor = 0;
     LCDmsgFail = 0;
+    LCDmsgError = 0;
   }
-  else {                                                                // display text message
-    if (!(LCDmsgPass || LCDmsgTune || LCDmsgGood || LCDmsgPoor || LCDmsgFail)){
+  else {                                                                  // display text message
+    if (!(LCDmsgPass || LCDmsgTune || LCDmsgGood || LCDmsgPoor || LCDmsgFail || LCDmsgError)){
       LCDmhzW=0;
       writeFrequency(0, 0x0E);                                            // clear frequency display
       writeFrequency(1, 0x0E);
@@ -575,10 +575,10 @@ void loop() {
       writeMHz(0);
     }
                                                                         // decode alpha displays PASS FAIL Error Tune; 4 letter start at 100 kHz digit
-    if ((kHz100 == 10) & (kHz10 == 11))                 // PASS detected?
+    if ((kHz100 == 10) & (kHz10 == 11))                                 // PASS detected
     {
       if (!LCDmsgPass){
-        writeMain(0,0);                                                   // This is BITE Pass, only thing on display
+        writeMain(0,0);                                                  // This is BITE Pass, only thing on display
         writeMain(12,0);
         writeMain(24,'P');
         writeMain(36,'a');
@@ -590,7 +590,7 @@ void loop() {
         LCDmsgPass = 1;
       }
     }
-    else if ((kHz100 == 21) & (kHz10 == 22))            // tune detected?
+    else if ((kHz100 == 21) & (kHz10 == 22))                              // tune detected
     {
       if (!LCDmsgTune){
         writeMain(24,'T');
@@ -602,7 +602,7 @@ void loop() {
         LCDmsgTune = 1;
       }
     }
-    else if ((kHz100 == 6) & (kHz10 == 20))             // Good detected?
+    else if ((kHz100 == 6) & (kHz10 == 20))                               // Good detected
     {
       if (!LCDmsgGood){
         writeMain(24,'G');
@@ -614,16 +614,7 @@ void loop() {
         LCDmsgGood = 1;
       }
     }
-//    else if ((kHz100 == 10) & (kHz10 == 11))                            // Pass
-//    {
-//      writeMain(24,'P');
-//      writeMain(36,'a');                            // this is tune pass, can't differentiate from BITE Pass, remove it?
-//      writeMain(48,'s');                            // 
-//      writeMain(60,'s');
-//      writeClean();
-//      clean = 0;                                                        // allow other display info
-//    }
-    else if ((kHz100 == 10) & (kHz10 == 20))              // Poor detected?
+    else if ((kHz100 == 10) & (kHz10 == 20))                              // Poor detected
     {
       if (!LCDmsgPoor){
         writeMain(24,'P');
@@ -635,7 +626,7 @@ void loop() {
         LCDmsgPoor = 1;
       }
     }
-    else if ((kHz100 == 12) & (kHz10 == 11))            // Fail detected?
+    else if ((kHz100 == 12) & (kHz10 == 11))                              // Fail detected
     {
       if (!LCDmsgFail){
         writeMain(24,'F');
@@ -647,7 +638,20 @@ void loop() {
         LCDmsgFail = 1;
       }
     }
-                                                                        // Still need Error indications
+    else if ((MHz10 == 18) & (MHz1 == 19)){                               // Er detected, note, in first two LCD positions
+      if (!LCDmsgError){
+        writeMain(0,'E');
+        writeMain(12,'r');
+        writeMain(24,'r');
+        writeMain(36,'o');
+        writeMain(48,'r');
+        writeFrequency(5, kHz100);                                        // get error code from kHz100 position and convert to number for display    
+//        writeMain(72,x);
+        writeClean();
+        clean = 0;                                                        // allow other display info
+        LCDmsgError = 1;
+        }
+      }  
   }
 //******************************************************************************************
 /* Write meter bar and voltage to display
@@ -704,56 +708,56 @@ void loop() {
   }
   long frequency = (10000000L * MHz10Z) + (1000000L * MHz1) + (100000L * kHz100) + (10000L * kHz10) + (1000L * kHz1) + (100L * Hz100);
 
-  if ((frequency >= 1800000) && (frequency <= 2000000)) {                                                       // 160 meters
-    hamBand = 'g';
+  if ((frequency >= 1803000) && (frequency <= 2000000)) {                                                       // 160 meters, corrected for LSB
+    hamBand = '-';
     }
-  else if ((frequency >= 3600000) && (frequency <= 3800000)) {                                                  // 80 meters extra
-    hamBand = 'x';
+  else if ((frequency >= 3603000) && (frequency <= 3800000)) {                                                  // 80 meters extra, corrected for LSB
+    hamBand = '+';
     }
-  else if ((frequency > 3800000) && (frequency <= 4000000)) {                                                   // 80 meters general
-    hamBand = 'g';
+  else if ((frequency > 3803000) && (frequency <= 4000000)) {                                                   // 80 meters general, corrected for LSB
+    hamBand = '-';
     }
   else if (frequency == 5330500) {                                                                              // 60 meters chan 1
-    hamBand = 'g';
+    hamBand = '-';
     }
   else if (frequency == 5346500) {                                                                              // 60 meters chan 2
-    hamBand = 'g';
+    hamBand = '-';
     }
   else if (frequency == 5357000) {                                                                              // 60 meters chan 3
-    hamBand = 'g';
+    hamBand = '-';
     }
   else if (frequency == 5371500) {                                                                              // 60 meters chan 4
-    hamBand = 'g';
+    hamBand = '-';
     }
   else if (frequency == 5403500) {                                                                              // 60 meters chan 5
-    hamBand = 'g';
+    hamBand = '-';
     }
-  else if ((frequency >= 7125000) && (frequency <= 7175000)) {                                                  // 40 meters extra
-    hamBand = 'x';
+  else if ((frequency >= 7128000) && (frequency <= 7175000)) {                                                  // 40 meters extra, corrected for LSB
+    hamBand = '+';
     }
-  else if ((frequency > 7175000) && (frequency <= 7300000)) {                                                   // 40 meters general
-    hamBand = 'g';
+  else if ((frequency > 7178000) && (frequency <= 7300000)) {                                                   // 40 meters general, corrected for LSB
+    hamBand = '-';
     }
-  else if ((frequency >= 14150000) && (frequency <= 14225000)) {                                                // 20 meters extra
-    hamBand = 'x';
+  else if ((frequency >= 14150000) && (frequency <= 14222000)) {                                                // 20 meters extra, corrected for USB
+    hamBand = '+';
     }
-  else if ((frequency > 14225000) && (frequency <= 14350000)) {                                                 // 20 meters general
-    hamBand = 'g';
+  else if ((frequency > 14225000) && (frequency <= 14347000)) {                                                 // 20 meters general, corrected for USB
+    hamBand = '-';
     }
-  else if ((frequency >= 18110000) && (frequency <= 18168000)) {                                                // 17 meters
-    hamBand = 'g';
+  else if ((frequency >= 18110000) && (frequency <= 18165000)) {                                                // 17 meters, corrected for USB
+    hamBand = '-';
     }
-  else if ((frequency >= 21200000) && (frequency <= 21275000)) {                                                // 15 meters extra
-    hamBand = 'x';
+  else if ((frequency >= 21200000) && (frequency <= 21272000)) {                                                // 15 meters extra, corrected for USB
+    hamBand = '+';
     }
-  else if ((frequency > 21275000) && (frequency <= 21450000)) {                                                 // 15 meters general
-    hamBand = 'g';
+  else if ((frequency > 21275000) && (frequency <= 21447000)) {                                                 // 15 meters general, corrected for USB
+    hamBand = '-';
     }
-  else if ((frequency >= 24930000) && (frequency <= 24990000)) {                                                // 12 meters
-    hamBand = 'g';
+  else if ((frequency >= 24930000) && (frequency <= 24987000)) {                                                // 12 meters, corrected for USB
+    hamBand = '-';
     }
-  else if ((frequency >= 28330000) && (frequency <= 29700000)) {                                                // 10 meters
-    hamBand = 'g';
+  else if ((frequency >= 28330000) && (frequency <= 29697000)) {                                                // 10 meters, corrected for USB
+    hamBand = '-';
     }
   else {
     hamBand = 0;
@@ -775,16 +779,12 @@ void loop() {
  *  If channel number is zero then display " VFO "
 */ 
   if (clean == 0 && LCDch){                                            // only display if the CH would normally be on, this keeps it clear initially
-    if (channel1 != channel1W){                                        // only do the following if the channel number has changed
+//    if (channel1 != channel1W){                                        // only do the following if the channel number has changed (bug, keeps +- from updating)
       if (channel1 == 0){                                              // display "VFO"
         writeStatusChar(0, 'V', 0);                                       // 
         writeStatusChar(8, 'F', 0);                                       // 
         writeStatusChar(16, 'O', 0);                                      // 
-    if (hamBand != hamBandW){
-     writeStatusChar(27, hamBand, 0);                                     // write ham band to display (was 97).  Do it here, only in VFO mode
-     hamBandW = hamBand;                                               // store to see if we can skip write next time around
-     }
-
+        writeStatusChar(27, hamBand, 0);                                  // write ham band to display (was 97).  Do it here, only in VFO mode
         channel1W = channel1;
       }
       else {                                                            // display channel number
@@ -792,15 +792,17 @@ void loop() {
         writeStatusChar(8, 'h', 0);
         writeStatusChar(16, 0, 0);                                         // clear out two cols between chars
         writeStatusChar(18, (0x30 + channel1), 0);                         // 
+        writeStatusChar(27, 0, 0);                                      // clear ham band character when in channel mode
         channel1W = channel1;    
       }
-    }   
+//    }   
   }
   else {
     writeStatusChar(0, 0, 0);                                              // clear display
     writeStatusChar(8, 0, 0);
     writeStatusChar(16, 0, 0);
     writeStatusChar(18, 0, 0);                                             // overlap to take care of space between Ch and number
+    writeStatusChar(27, 0, 0);
   }
 
 //******************************************************************************************
@@ -809,7 +811,7 @@ void loop() {
 */
   TXlow = digitalRead(A2);
   if (!TXlow){
-    writeStatusChar(57, 'T', 1);                                        // display TX 
+    writeStatusChar(57, 'T', 1);                                        // display TX with inverted letters
     writeStatusChar(65, 'x', 1);                                        // 
   }
   else{
@@ -919,12 +921,10 @@ void receiveEvent(int howMany) {
           }
         }   
         else{                                                       // data byte
-          // Pointer seems to always be zero in this app
+          // Note, pointer seems to always be zero in this app
           //
-          // First let's just try to load second bank data (bank 1) to second half of our data buffer.  If this doesn't screw up the normal functionality
-          // then perhaps the radio CPU is simply writing both full pages and we can do the later compare based on the blink bit to see what digit is to be blinking
-          // (so far, so good)
-          // Two bugs:  1) getting a 7 instead of 2 for 10's in MHz at times.  2) freq display blanks at times during programming, like alt digits?
+          // Load second bank data (bank 1) to second half of our data buffer.  We later compare buffer data to determine what is supposed to be blinking
+          // and then highlight it with inverted char.
           //
           if (LCDinBank){
             LCDdata[0x0A + (LCDpointer++)] = indata;                // put incoming data byte into second bank area
@@ -935,7 +935,7 @@ void receiveEvent(int howMany) {
         }
       } 
       LCDinBank = 0;                                                // reset this after 2nd page data received
-  }                                                                 //end of receive event
+  }                                                                 //end of receive event.  Receive event handling should be as short as possible.
     
 //********************************************************************************************
 // Converts segment data to number or character by basic pattern match.
@@ -1520,6 +1520,12 @@ void writeStatusChar(uint8_t coordX, char ascii, bool invert){
         case 0x54:                                                          // T
           index = 0x1D * 16;
           break;
+        case 0x2B:                                                          // +
+          index = 0x1E * 16;
+          break;
+        case 0x2D:                                                          // -
+          index = 0x1F * 16;
+          break;
         default:   
           return;                                                           // do nothing if ASCII code not something we have
         }
@@ -1542,7 +1548,7 @@ void writeStatusChar(uint8_t coordX, char ascii, bool invert){
         selectPage(2);                                                    // page 2, third page from top
         dummyRead();
         if (invert){
-          writeChar(~charA & B00000001);                                  // when inverting, linit to height of characters used in small font
+          writeChar(~charA & B11000000);
           }
         else{
           writeChar(charA);   
